@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 
 # MODIFY THESE PATHS BASED ON YOUR STRUCTURE
-SOURCE_ROOT = os.path.expanduser('/content/workspace')
+# SOURCE_ROOT = os.path.expanduser('/content/workspace')
+SOURCE_ROOT = './video_dirs'
   # folder containing folders like 2c5537eddf
 WORKSPACE_ROOT = 'workspace'  # where COLMAP workspaces will be created
 
