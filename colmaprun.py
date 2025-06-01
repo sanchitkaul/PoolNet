@@ -45,59 +45,59 @@ def compute_metrics(poses, total_frames):
     vr = np.mean(angles) / 180 if angles else 0
 
     return ts, round(to, 3), round(vr, 3), round(vt, 3)
+if __name__ == "__main__":
+    results = []
 
-results = []
+    video_folders = [f for f in os.listdir(WORKSPACE_ROOT) if os.path.isdir(os.path.join(WORKSPACE_ROOT, f))]
 
-video_folders = [f for f in os.listdir(WORKSPACE_ROOT) if os.path.isdir(os.path.join(WORKSPACE_ROOT, f))]
+    for vid in video_folders:
+        print(f"\n▶ Processing: {vid}")
+        folder = os.path.join(WORKSPACE_ROOT, vid)
+        images_path = os.path.join(folder, 'images')
+        sparse_path = os.path.join(folder, 'sparse')
+        total_frames = len([f for f in os.listdir(images_path) if f.endswith(('.jpg', '.png', '.jpeg'))])
 
-for vid in video_folders:
-    print(f"\n▶ Processing: {vid}")
-    folder = os.path.join(WORKSPACE_ROOT, vid)
-    images_path = os.path.join(folder, 'images')
-    sparse_path = os.path.join(folder, 'sparse')
-    total_frames = len([f for f in os.listdir(images_path) if f.endswith(('.jpg', '.png', '.jpeg'))])
-
-    try:
-        # COLMAP one-liner
-        subprocess.run([
-            'colmap', 'automatic_reconstructor',
-            '--workspace_path', folder,
-            '--image_path', images_path,
-            '--use_gpu', '1'
-        ], check=True)
+        try:
+            # COLMAP one-liner
+            subprocess.run([
+                'colmap', 'automatic_reconstructor',
+                '--workspace_path', folder,
+                '--image_path', images_path,
+                '--use_gpu', '1'
+            ], check=True)
 
 
-        # Convert binary to TXT
-        sparse_model_path = os.path.join(sparse_path, '0')
-        convert_model_to_text(sparse_model_path)
+            # Convert binary to TXT
+            sparse_model_path = os.path.join(sparse_path, '0')
+            convert_model_to_text(sparse_model_path)
 
-        # Parse images.txt
-        images_txt = os.path.join(sparse_model_path, 'images.txt')
-        poses = parse_images_txt(images_txt)
+            # Parse images.txt
+            images_txt = os.path.join(sparse_model_path, 'images.txt')
+            poses = parse_images_txt(images_txt)
 
-        # Compute metrics
-        ts, to, vr, vt = compute_metrics(poses, total_frames)
-        print(f"✓ {vid}: Ts={ts}, To={to}, Vr={vr}, Vt={vt}")
+            # Compute metrics
+            ts, to, vr, vt = compute_metrics(poses, total_frames)
+            print(f"✓ {vid}: Ts={ts}, To={to}, Vr={vr}, Vt={vt}")
 
-        results.append({
-            'video_id': vid,
-            'Ts': ts,
-            'To': to,
-            'Vr': vr,
-            'Vt': vt
-        })
+            results.append({
+                'video_id': vid,
+                'Ts': ts,
+                'To': to,
+                'Vr': vr,
+                'Vt': vt
+            })
 
-    except Exception as e:
-        print(f"❌ Failed on {vid}: {e}")
-        results.append({
-            'video_id': vid,
-            'Ts': -1,
-            'To': -1,
-            'Vr': -1,
-            'Vt': -1
-        })
+        except Exception as e:
+            print(f"❌ Failed on {vid}: {e}")
+            results.append({
+                'video_id': vid,
+                'Ts': -1,
+                'To': -1,
+                'Vr': -1,
+                'Vt': -1
+            })
 
-# Save results
-df = pd.DataFrame(results)
-df.to_csv(RESULTS_CSV, index=False)
-print(f"\n✅ Results saved to {RESULTS_CSV}")
+    # Save results
+    df = pd.DataFrame(results)
+    df.to_csv(RESULTS_CSV, index=False)
+    print(f"\n✅ Results saved to {RESULTS_CSV}")
