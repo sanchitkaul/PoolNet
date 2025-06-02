@@ -48,12 +48,6 @@ class LSTMHead(nn.Module):
             "vt": self.vt(last_hidden)
         }
 
-vit = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
-processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
-
-head = LSTMHead()
-print(f"Model head: {type(head)}")
-
 def extract_frames(video_path, num_frames=8):
     cap = cv2.VideoCapture(video_path)  
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -76,40 +70,46 @@ def extract_frames(video_path, num_frames=8):
     cap.release()
     return frames
 
-video_path = "./test-videos/00001.mp4" 
-frames = extract_frames(video_path, num_frames=8)
+if __name__ == "__main__":
+    vit = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
+    processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
 
-#dummy_image = Image.fromarray(np.uint8(np.random.rand(224, 224, 3) * 255))
-#inputs = processor(images=dummy_image, return_tensors="pt")
+    head = LSTMHead()
+    print(f"Model head: {type(head)}")
 
-cls_vectors = []
+    video_path = "./test-videos/00001.mp4" 
+    frames = extract_frames(video_path, num_frames=8)
 
-with torch.no_grad():
-    for frame in frames:
-        inputs = processor(images=frame, return_tensors="pt")
-        outputs = vit(**inputs)
-        cls_token = outputs.last_hidden_state[:, 0, :]  
-        cls_vectors.append(cls_token.squeeze(0))
+    #dummy_image = Image.fromarray(np.uint8(np.random.rand(224, 224, 3) * 255))
+    #inputs = processor(images=dummy_image, return_tensors="pt")
 
-sequence = torch.stack(cls_vectors)
-avg_vector = torch.mean(sequence, dim=0)  # shape: [768]
+    cls_vectors = []
 
-# For result using linear model
-# with torch.no_grad():
-    #preds = head(avg_vector)
+    with torch.no_grad():
+        for frame in frames:
+            inputs = processor(images=frame, return_tensors="pt")
+            outputs = vit(**inputs)
+            cls_token = outputs.last_hidden_state[:, 0, :]  
+            cls_vectors.append(cls_token.squeeze(0))
 
-with torch.no_grad():
-    preds = head(sequence)
+    sequence = torch.stack(cls_vectors)
+    avg_vector = torch.mean(sequence, dim=0)  # shape: [768]
 
-ts_val = preds['ts'].squeeze().item()
-to_val = preds['to_output'].squeeze().item()
-vr_val = preds['vr'].squeeze().item()
-vt_val = preds['vt'].squeeze().item()
+    # For result using linear model
+    # with torch.no_grad():
+        #preds = head(avg_vector)
 
-print("\n Predictions:")
-print(f"Ts (COLMAP success): {ts_val:.3f}")
-print(f"To (% frames used): {to_val:.3f}")
-print(f"Vr (rotation diversity): {vr_val:.3f}")
-print(f"Vt (translation diversity): {vt_val:.3f}")
+    with torch.no_grad():
+        preds = head(sequence)
 
+    ts_val = preds['ts'].squeeze().item()
+    to_val = preds['to_output'].squeeze().item()
+    vr_val = preds['vr'].squeeze().item()
+    vt_val = preds['vt'].squeeze().item()
+
+    print("\n Predictions:")
+    print(f"Ts (COLMAP success): {ts_val:.3f}")
+    print(f"To (% frames used): {to_val:.3f}")
+    print(f"Vr (rotation diversity): {vr_val:.3f}")
+    print(f"Vt (translation diversity): {vt_val:.3f}")
 
