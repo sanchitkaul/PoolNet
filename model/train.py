@@ -27,11 +27,30 @@ def train_model(model, backend, preprocessessor, dataloader_opts, optimizer, dat
         scene = dataset[cur_iter]
 
         output = model(scene)
-        label = scene.get_label()
-        label = torch.tensor(label, dtype=torch.float32).to(device)
+        label = scene[0].get_label()
+
+        label = {key : torch.tensor(float(label[key]), dtype=torch.float32).to(device) for key in label.keys()}
+        
+        print(f"ts: {label['Ts']} : {output['ts']}")
+        print(f"to: {label['To']} : {output['to_output']}")
+        print(f"vr: {label['Vr']} : {output['vr']}")
+        print(f"vt: {label['Vt']} : {output['vt']}")
+        print(f"ts: {label['Ts'].item()} : {output['ts'].item()}")
+        print(f"to: {label['To'].item()} : {output['to_output'].item()}")
+        print(f"vr: {label['Vr'].item()} : {output['vr'].item()}")
+        print(f"vt: {label['Vt'].item()} : {output['vt'].item()}")
 
         optimizer.zero_grad()
-        loss = criterion(output, label)
+
+        loss_ts = criterion(output["ts"], label["Ts"])
+        mask = loss_ts.item() == 1
+
+        loss_to = criterion(output["to_output"], label["To"]) * mask
+        loss_vr = criterion(output["vr"], label["Vr"]) * mask
+        loss_vt = criterion(output["vt"], label["Vt"]) * mask
+
+        loss = loss_ts + loss_to + loss_vr + loss_vt
+
         loss.backward()
         optimizer.step()
 

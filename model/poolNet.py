@@ -58,7 +58,7 @@ class LSTMHead(nn.Module):
         if isinstance(x, Scene):
 
             while x.has_next():
-                print(f"Processing scene: {x.scene_id}, image {j + 1}, cuda usage: {torch.cuda.memory_allocated(self.device) / 1024 ** 3:.2f} GB")
+                # print(f"Processing scene: {x.scene_id}, image {j + 1}, cuda usage: {torch.cuda.memory_allocated(self.device) / 1024 ** 3:.2f} GB")
                 data = x.get_next()
                 image, label, self.scene_id, key = data
                 img_input = self.processor(images=image, return_tensors="pt").to(self.device)
@@ -74,6 +74,7 @@ class LSTMHead(nn.Module):
         #     x = x.unsqueeze(0)  # Add batch dimension
         # _, (hn, _) = self.lstm(x)
         # last_hidden = hn[-1]  # Last layer's hidden state
+        print(f"Last hidden state shape: {h_n.shape}, c_n shape: {c_n.shape}")
         return {
             "ts": torch.sigmoid(self.ts(h_n)),
             "to_output": self.to_output(h_n),
