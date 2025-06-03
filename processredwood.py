@@ -154,7 +154,8 @@ def generate_targets():
 
                             total_frames = len([f for f in os.listdir(database) if f.endswith(('.jpg', '.png', '.jpeg', '.png'))])
 
-                            ts, to, vr, vt = compute_metrics(poses, total_frames)
+                            ts, to, vr, vt_raw = compute_metrics(poses, total_frames)
+                            vt = round(np.log1p(vt_raw), 3)
                             print(f"✓ {database.name}: Ts={ts}, To={to}, Vr={vr}, Vt={vt}")
                             if ts == 1:
                                 data_distribution["ts1"] += 1
