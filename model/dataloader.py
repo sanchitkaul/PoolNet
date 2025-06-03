@@ -6,6 +6,9 @@ import json
 from PIL import Image
 import random
 from collections.abc import Iterable
+from tqdm import tqdm
+import numpy as np
+import cv2
 
 class Scene(Iterable):
     def __init__(self, scene_id, scene_path):
@@ -22,9 +25,24 @@ class Scene(Iterable):
             elif file.suffix == '.json':
                 with open(file, 'r') as f:
                     self.label = json.load(f)
+
+        
+        self.height, self.width, _ = np.asarray(Image.open(self.images[0]["img"])).shape 
     
         self.current_index = 0
         self.process_inorder = True # in case we want to try augmenting our data processing with out-of-order sampling
+        self.random_crop = False
+        self.random_shift = False
+        self.target_shape = (224, 224)
+
+        self.max_length = 150 # max number of images to process
+
+        self.reset()
+    
+    def get_label(self):
+        if self.label is None:
+            raise ValueError("Label not set for this scene.")
+        return self.label
     
     def set_inorder(self, inorder_new):
         self.process_inorder = inorder_new
@@ -43,7 +61,39 @@ class Scene(Iterable):
 
     def has_next(self):
         # check if all images have used set to True
-        return not all(image["used"] for image in self.images.values())
+        return not all(image["used"] for image in self.images.values()) and not self.current_index >= self.max_length
+    
+    def img_aug(self, data):
+        data = np.asarray(data)
+        
+        #center crop to square
+        min_dim = min(data.shape[:2])
+
+        left = (self.width - min_dim) // 2
+        top = (self.height - min_dim) // 2
+        right = left + min_dim
+        bottom = top + min_dim
+        data = data[top:bottom, left:right]
+
+        # resize to target shape
+        data = cv2.resize(data, self.target_shape, interpolation=cv2.INTER_LINEAR)
+
+        return data
+    
+    def get_next(self):
+        if not self.has_next():
+            raise StopIteration("No more images to process in this scene.")
+
+        next_key = self.process_order[self.current_index]
+        image = self.img_aug(Image.open(self.images[next_key]["img"]))
+        label = self.label
+        scene_id = self.scene_id
+        key = next_key
+
+        self.current_index += 1
+        self.images[next_key]["used"] = True
+
+        return image, label, scene_id, key
     
     def __iter__(self):
         self.reset()
@@ -51,27 +101,33 @@ class Scene(Iterable):
         for key in self.process_order:
 
             # NOTE: add in any image processing as needed HERE
-            image = self.images[key]["img"]
+            image = self.img_aug(Image(self.images[key]["img"]))
+
             label = self.label
 
             yield image, label, self.scene_id, key
 
 class SceneDataset(Dataset):
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, dataloader_opts=None):
         self.data_dir = Path(data_dir)
         self.inorder = True
-        self.augment = True
+
+        if dataloader_opts == None:
+            self.augment = False
+            self.dataloader_opts = {}
+        else:
+            self.augment = True if dataloader_opts.get("augment", True) else False
+            self.dataloader_opts = dataloader_opts
 
         self.scenes = []
 
-        for scene_name in self.data_dir.iterdir():
+        for scene_name in tqdm(self.data_dir.iterdir()):
             if scene_name.is_dir():
                 scene_id = str(scene_name.name)
-                print(f"Found scene: {scene_id}")
                 scene_path = self.data_dir / scene_name
 
                 scene = Scene(scene_id, scene_path)
-                self.scenes.append(scene)
+                self.scenes.append([scene]) # NOTE: we need to wrap the scene in a list to allow dataloader to trick the dataloader into allowing batching (limited to 1)
 
     def set_inorder(self, inorder_new):
         self.inorder = inorder_new
@@ -83,13 +139,14 @@ class SceneDataset(Dataset):
         return len(self.scenes)
 
     def __getitem__(self, idx):
-        self.scenes[idx].set_inorder(self.inorder)
-        self.scenes[idx].reset()
+        self.scenes[idx][0].set_inorder(self.inorder)
+        self.scenes[idx][0].reset()
         return self.scenes[idx]
 
         # depending on settings, return in order, out of order, and with augmentation
 
 def collate_fn(batch):
+    # custom collate function to prevent error for large batching
     if len(batch) > 1:
         raise ValueError("Batch size must be 1 for SceneDataset.")
     return batch[0]
