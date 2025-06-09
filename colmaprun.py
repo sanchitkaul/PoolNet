@@ -28,6 +28,9 @@ def parse_images_txt(images_txt_path):
                 poses.append((qw, qx, qy, qz, tx, ty, tz))
     return poses
 
+def compute_metrics_updated(poses, total_frames):
+    return 0, 0, 0, 0
+
 def compute_metrics(poses, total_frames):
     used = len(poses)
     ts = 1 if used >= min_success_views else 0
@@ -45,6 +48,7 @@ def compute_metrics(poses, total_frames):
     vr = np.mean(angles) / 180 if angles else 0
 
     return ts, round(to, 3), round(vr, 3), round(vt, 3)
+
 if __name__ == "__main__":
     results = []
 
