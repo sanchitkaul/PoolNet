@@ -10,6 +10,7 @@ import os
 from collections import deque
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from tqdm import tqdm
 
 def process_colmap(workspace_dir, output_dir):
     start_time = time.time()
@@ -425,7 +426,46 @@ def generate_targets():
         print(f"Data distribution: {data_distribution}")
         print(f"Size distribution: {sizes}")
 
+def extract_frames_only(video_dir, output_dir, processed_dir, frame_rate=5, json_data_desc="./meshes.json"):
+    video_dir = Path(video_dir)
+    output_dir = Path(output_dir)
+    json_data_desc = Path(json_data_desc)
+    processed_dir = Path(processed_dir)
+
+    
+    pre_processed = {} # dictionary is faster access time than list
+    for i, scene_dir in enumerate(os.listdir(processed_dir)):
+        pre_processed[int(scene_dir)] = True
+
+    meshable = json_data_desc
+    with open(meshable, 'r') as f:
+        meshable_data = json.load(f)
+        meshable_data = list(meshable_data)
+        meshable_data = [int(x) for x in meshable_data]
+
+    for i, video_file in tqdm(enumerate(os.listdir(video_dir))):
+        video_file_int = int(video_file.split(".")[0])
+        if video_file_int not in pre_processed and video_file_int in meshable_data:
+            if not os.path.exists(output_dir / video_file.split(".")[0]):
+                os.makedirs(output_dir / video_file.split(".")[0], exist_ok=True)
+                output_pattern = str(output_dir / f"{video_file.split('.')[0]}" / f"{video_file}_%04d.png")
+                try:
+                    ffmpeg.input(str(video_dir / f"{video_file.split('.')[0]}.mp4")).output(
+                        output_pattern,
+                        vf=f"fps={frame_rate}",
+                        start_number=0,
+                    ).global_args('-loglevel', 'quiet').run()
+                except Exception as e:
+                    print(f"Error processing {video_file}: {e}")
+            else:
+                print(f"Output directory {output_dir / video_file.split('.')[0]} already exists, skipping processing for {video_file}.")
 
 if __name__ == "__main__":
     # main()
-    generate_targets()
+    # generate_targets()
+    extract_frames_only(
+        video_dir="/media/SharedStorage/redwood/mp4", 
+        output_dir="/media/SharedStorage/redwood/FramesOnly", 
+        processed_dir="/media/SharedStorage/redwood/output",
+        frame_rate=5, 
+        json_data_desc="/home/joseph/Projects/ECS271/Project/redwood-3dscan/meshes.json")

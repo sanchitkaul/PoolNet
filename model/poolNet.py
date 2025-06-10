@@ -7,8 +7,6 @@ import cv2
 from dataloader import Scene
 from torchvision import models, transforms
 
-class PatchEmbeddingDecoder(nn.Module):
-    pass
 
 class PatchEmbedding(nn.Module):
     def __init__(self, in_channels=3, patch_size=16, emb_dim=256):
@@ -54,7 +52,7 @@ class TransformerEncoder(nn.Module):
         return self.encoder(x)
 
 class SequentialTransformer(nn.Module):
-    def __init__(self, image_count, patch_size=8, emb_dim=256, output_type='regression'):
+    def __init__(self, image_count, patch_size=8, emb_dim=256, output_type='regression', device="cuda"):
         super().__init__()
         assert output_type in ['embedding', 'regression']
         self.image_count = image_count
@@ -101,35 +99,90 @@ class SequentialTransformer(nn.Module):
         else:  # regression
             x = x.mean(dim=1)  # [B, emb_dim]
             return self.head(x)  # [B, 1]
+        
+class ConvFormer(nn.Module):
+    def __init__(self, img_embedder, img_embedder_path, frame_length=10, embedding_dim=64, dropout=0.1, num_classes=2, device="cuda"):
+        super().__init__()
+        print(f"checking for torch load and model compatibility")
+
+        self.img_embedder = img_embedder
+        self.img_embedder.load_state_dict(torch.load(img_embedder_path))
+        self.img_embedder.to(device)
+
+        self.frame_length = frame_length
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        B, L, C, W, H = 32, frame_length, 3, 320, 240
+        
+        self.cls_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.pos_embed = nn.Parameter(torch.randn(1, 11, embedding_dim))
+        
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embedding_dim, nhead=4, dropout=dropout, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
+
+        self.classifier_head = nn.Sequential(
+            nn.Linear(embedding_dim, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, num_classes),
+            nn.Softmax()
+        )
+
+        # freeze embedder by default
+        self.freeze_embedder()
+
+    def freeze_embedder(self):
+        self.img_embedder.eval()
+        for param in self.img_embedder.parameters():
+            param.requires_grad = False
+    
+    def unfreeze_embedder(self):
+        self.img_embedder.train()
+        for param in self.img_embedder.parameters():
+            param.requires_grad = True
+
+    def forward(self, x):
+        B, L, C, H, W = x.size()
+        x = x.view(B*L, C, W, H)
+
+        # print(f"Input shape: {x.shape}, expected: {(B*L, C, W, H)}")
+
+        with torch.no_grad():
+            frame_embeddings = self.img_embedder(x)
+
+        frame_embeddings = frame_embeddings.view(B, L, -1)
+        cls =self.cls_token.expand(B, -1, -1)
+        x_seq = torch.cat([cls, frame_embeddings], dim=1)
+        x_seq = x_seq + self.pos_embed[:, :x_seq.size(1)]
+
+        x_encoded = self.transformer(x_seq)
+        cls_output = x_encoded[:, 0, :]
+
+        return self.classifier_head(cls_output)
 
 class BasicCNN(nn.Module):
-    def __init__(self, input_width=224, input_height=224, input_channels=6, num_classes=1):
+    def __init__(self, input_width=320, input_height=240, input_channels=6, num_classes=1):
         super(BasicCNN, self).__init__()
-        # self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=3, stride=1, padding=1)
-        # self.bn_cnv1 = nn.BatchNorm2d(16)
+
         self.conv2 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=1)
         self.bn_cnv2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
         self.bn_cnv3 = nn.BatchNorm2d(64)
 
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.fc1 = nn.Linear(64 * (input_width // 4) * (input_height // 4), 1024)
-        self.bn_fc1 = nn.BatchNorm1d(1024)
+        self.fc1 = nn.Linear(64 * (input_width // 4) * (input_height // 4), 2048)
+        self.bn_fc1 = nn.BatchNorm1d(2048)
 
-        self.fc2 = nn.Linear(1024, 256)
-        self.bn_fc2 = nn.BatchNorm1d(256)
+        self.fc2 = nn.Linear(2048, 512)
+        self.bn_fc2 = nn.BatchNorm1d(512)
 
-        self.fc3 = nn.Linear(256, num_classes)
+        self.fc3 = nn.Linear(512, num_classes)
         self.bn_fc3 = nn.BatchNorm1d(num_classes)
 
         self.act = nn.LeakyReLU()
-        # self.final = nn.ReLU()  # Set seed for reproducibility
         self.final = nn.Sigmoid()  # Final activation function for output layer
         self.__init_weights()
-        # self.__init_weights_2()  # Use He initialization
 
     def __init_weights_2(self):
-        # He initialization
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -153,10 +206,6 @@ class BasicCNN(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        # x = self.conv1(x)
-        # x = self.bn_cnv1(x)
-        # x = self.act(x)
-
         x = self.conv2(x)
         x = self.bn_cnv2(x)
         x = self.act(x)
@@ -167,24 +216,12 @@ class BasicCNN(nn.Module):
         x = self.act(x)
         x = self.pool(x)
 
-        # x = self.conv4(x)
-        # x = self.bn_cnv4(x)
-        # x = self.act(x)
-        # x = self.pool(x)
-
         # flatten along non-batched dimension
         x = x.flatten(start_dim=1)  # Flatten all dimensions except the batch dimension
         x = self.fc1(x)
-        # x = self.act(x)
-        # x = self.bn_fc1(x)
-
         x = self.fc2(x)
-        # x = self.act(x)
-        # x = self.bn_fc2(x)
 
         x = self.fc3(x)
-        # x = self.final(x)
-        # x = self.bn_fc3(x)
 
         return x
 

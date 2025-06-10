@@ -1,4 +1,4 @@
-from poolNet import PoolNetHead, LSTMHead, ViTModel, ViTImageProcessor, BasicCNN, SequentialTransformer
+from poolNet import PoolNetHead, LSTMHead, ViTModel, ViTImageProcessor, BasicCNN, SequentialTransformer, ConvFormer
 # NOTE: VitImageProcessor does not crop. non-square images will be squished vertically or horizontally
 import torch
 from PIL import Image
@@ -6,7 +6,7 @@ import numpy as np
 import tensorboard
 import matplotlib.pyplot as plt
 from pathlib import Path
-from dataloader import SceneDataset, SequentialFrameDataset, collate_fn, FrameMatchingDataset
+from dataloader import SceneDataset, SequentialFrameDataset, collate_fn, FrameMatchingDataset, FrameMatchingDatasetNoGeometry, FrameSequenceMeshification
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import mean_absolute_error, r2_score
@@ -343,24 +343,41 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 
 def main3():
-    torch.manual_seed(49)
+    torch.manual_seed(51)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = BasicCNN(320, 240, 3, num_classes=64).to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=0.0001)
-    epochs = 100
-    frame_match_dataset = FrameMatchingDataset(Path("/media/SharedStorage/redwood/output"))
+    optim = torch.optim.Adam(model.parameters(), lr=0.00001, weight_decay=0.0001)
+    epochs = 10
+    frame_match_only_dataset = FrameMatchingDatasetNoGeometry(Path("/media/SharedStorage/redwood/FramesOnly"))
+    test_ratio = 0.1
+    test_size = int(len(frame_match_only_dataset) * test_ratio)
+    train_size = len(frame_match_only_dataset) - test_size
+    train_dataset, test_dataset = torch.utils.data.random_split(frame_match_only_dataset, [train_size, test_size])
+    # frame_match_dataset = FrameMatchingDataset(Path("/media/SharedStorage/redwood/output"))
     train_loader = torch.utils.data.DataLoader(
-        frame_match_dataset,
+        train_dataset,
         batch_size=32,
         shuffle=True,
     )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=32,
+        shuffle=False,
+    )
+
     total_loss = 0.0
     loss_count = 0
 
     criterion = torch.nn.CosineEmbeddingLoss(margin=0.1)
 
     for epoch in range(epochs):
+
+        model.eval()
+        test_correct = 0
+        test_count = 0
+
+
         model.train()
         for i, batch in tqdm(enumerate(train_loader)):
             images, labels = batch
@@ -368,6 +385,9 @@ def main3():
             labels = labels.to(device).float()
             im1 = images[:, 0, :, :, :].float().permute(0, 3, 2, 1)
             im2 = images[:, 1, :, :, :].float().permute(0, 3, 2, 1)
+
+            print("im1", im1.shape)
+            raise Exception("breakpoint")
 
             # print("checking data spec")
             # print(im1.shape, im2.shape, labels.shape)
@@ -395,6 +415,10 @@ def main3():
             if i % 50 == 0:
                 print()
                 print("-----------------------------------------------------------")
+                print("output1: ", end="")
+                print(f"{output1[0].detach().cpu().numpy()}")
+                print("output2: ", end="")
+                print(f"{output2[0].detach().cpu().numpy()}")
                 print(f"output1/2 Cos Sim:")
                 print(f"{F.cosine_similarity(output1, output2, dim=1)}")
                 # snap cosine sim values to -1 to 1 to check model accuracy
@@ -416,9 +440,162 @@ def main3():
                 print(f"Epoch {epoch + 1}/{epochs}, Iter {i + 1}, Loss: {total_loss / loss_count:.4f}")
                 total_loss = 0.0
                 loss_count = 0
-        if epoch in [9, 19, 29, 39, 49, 59, 69, 79, 89, 99]:
-            torch.save(model.state_dict(), f"frame_match_model_epoch_{epoch + 1}.pth")
-            print(f"Model saved at epoch {epoch + 1}")
+        # Evaluate on test set
+        print(f"Evaluating on test set at epoch {epoch + 1}/{epochs}...")
+        for i, data in enumerate(test_loader):
+            images, labels = data
+            images = images.to(device).float()
+            labels = labels.to(device).float()
+            im1 = images[:, 0, :, :, :].float().permute(0, 3, 2, 1)
+            im2 = images[:, 1, :, :, :].float().permute(0, 3, 2, 1)
+
+            with torch.no_grad():
+                output1 = model(im1).float()
+                output2 = model(im2).float()
+
+            cosine_sim_binary = F.cosine_similarity(output1, output2, dim=1)
+            cosine_sim_binary = torch.where(cosine_sim_binary > 0, torch.tensor(1.0, device=device), torch.tensor(-1.0, device=device))
+
+            correct = np.asarray([1 if cosine_sim_binary[j] == labels[j] else 0 for j in range(len(labels))])
+            test_correct += correct.sum()
+            test_count += len(labels)
+        print(f"Test Accuracy: {test_correct / test_count:.4f}")
+        torch.save(model.state_dict(), f"frame_match_model_epoch_{epoch + 1}.pth")
+        print(f"Model saved at epoch {epoch + 1}")
+
+def main4():
+    torch.manual_seed(51)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    embedder = BasicCNN(320, 240, 3, num_classes=64).to(device)
+    model = ConvFormer(img_embedder=embedder, img_embedder_path="frame_match_model_epoch_1.pth").to(device)
+
+    optim = torch.optim.Adam(model.parameters(), lr=0.00001, weight_decay=0.0001)
+    epochs = 10
+
+    sequence_meshability_dataset = FrameSequenceMeshification(Path("/media/SharedStorage/redwood/FramesOnly"))
+    test_ratio = 0.1
+    test_size = int(len(sequence_meshability_dataset) * test_ratio)
+    train_size = len(sequence_meshability_dataset) - test_size
+    train_dataset, test_dataset = torch.utils.data.random_split(sequence_meshability_dataset, [train_size, test_size])
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=32,
+        shuffle=True,
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=32,
+        shuffle=False,
+    )
+
+    loss_fn = torch.nn.CrossEntropyLoss()
+    total_loss = 0.0
+    loss_count = 0
+
+    for epoch in range(epochs):
+        model.eval()
+        correct = 0
+        count = 0
+
+        model.train()
+        for i, batch in enumerate(train_loader):
+            sequences, labels = batch
+
+            labels = labels.to(device).float()
+            sequences = sequences.to(device).float()
+            # print("sequences shape: ", sequences.shape)
+            optim.zero_grad()
+
+            outputs = model(sequences).float()
+            loss = loss_fn(outputs, labels)
+
+            total_loss += loss.item()
+            loss_count += 1
+            loss.backward()
+            optim.step()
+
+            for j in tqdm(range(len(outputs))):
+                correct = correct + (outputs[j].argmax() == labels[j].argmax()).item()
+                count += len(outputs)
+
+            if i % 50 == 0:
+                print()
+                print("-----------------------------------------------------------")
+                print("total loss:", total_loss / loss_count)
+                print("accuracy:", correct / count)
+                print("outputs: ", outputs.permute((1, 0)).detach().cpu().numpy())
+                print("labels: ", labels.permute((1, 0)).detach().cpu().numpy())
+                print(f"Epoch {epoch + 1}/{epochs}, Iter {i + 1}, Loss: {total_loss / loss_count:.4f}")
+                total_loss = 0.0
+                loss_count = 0
+        # Evaluate on test set
+        print(f"Evaluating on test set at epoch {epoch + 1}/{epochs}...")
+        model.eval()
+        test_correct = 0
+        test_count = 0
+        for i, data in enumerate(test_loader):
+            sequences, labels = data
+            labels = labels.to(device).float()
+            sequences = sequences.to(device).float()
+
+            with torch.no_grad():
+                outputs = model(sequences).float()
+
+            for j in range(len(outputs)):
+                test_correct += (outputs[j].argmax() == labels[j].argmax()).item()
+                test_count += len(outputs)
+        print(f"Test Accuracy: {test_correct / test_count:.4f}")
+        torch.save(model.state_dict(), f"convformer_model_epoch_{epoch + 1}.pth")
+
+def confformer_test():
+    torch.manual_seed(51)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    embedder = BasicCNN(320, 240, 3, num_classes=64)
+    model = ConvFormer(img_embedder=embedder, img_embedder_path="frame_match_model_epoch_1.pth")
+    model.to(device)
+    model.load_state_dict(torch.load("convformer_model_epoch_1.pth"))
+
+    sequence_meshability_dataset = FrameSequenceMeshification(Path("/media/SharedStorage/redwood/FramesOnly"))
+    test_ratio = 0.1
+    test_size = int(len(sequence_meshability_dataset) * test_ratio)
+    train_size = len(sequence_meshability_dataset) - test_size
+    train_dataset, test_dataset = torch.utils.data.random_split(sequence_meshability_dataset, [train_size, test_size])
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=32,
+        shuffle=True,
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=32,
+        shuffle=False,
+    )
+
+    # evaluate on test
+    correct = 0
+    count = 0
+    for i, data in enumerate(test_loader):
+        sequences, labels = data
+        labels = labels.to(device).float()
+        sequences = sequences.to(device).float()
+
+        outputs = model(sequences).float()
+
+        print(f"outputs: {outputs.permute((1, 0)).detach().cpu().numpy()}")
+        print(f"labels: {labels.permute((1, 0)).detach().cpu().numpy()}")
+
+        count_corrects = [1 if outputs[j][0] > 0.5 and labels[j][0] > 0.5 or outputs[j][0] < 0.5 and labels[j][0] < 0.5 else 0 for j in range(len(outputs))]
+        print(count_corrects)
+        print(sum(count_corrects))
+        correct += sum(count_corrects)
+        count += len(outputs)
+    print(f"Test Accuracy: {correct / count:.4f}")
+
 
 if __name__ == "__main__":
-    main3()
+    # main3()
+    # main4()
+    confformer_test()

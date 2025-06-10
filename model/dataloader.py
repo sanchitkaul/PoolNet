@@ -238,6 +238,202 @@ class Scene:
 
     #         yield image, label, self.scene_id, key
 
+class ImageDir:
+    def __init__(self, image_dir):
+        self.image_dir = Path(image_dir)
+        self.images = {}
+
+    def add_image(self, image_pos, image_path):
+        self.images[image_pos] = image_path
+
+    def get_random_sequence(self, sequence_length):
+        max_index = len(self.images) - sequence_length
+        start_index = random.randint(0, max_index)
+        sequence = []
+
+        for i in range(start_index, start_index + sequence_length):
+            sequence.append(Image.open(self.images[i]))
+        
+        return sequence
+
+class FrameSequenceMeshification(Dataset):
+    def __init__(self, dataset_path, sample_mode="sequence-meshibility", sequence_length=10, meshes_json="/home/joseph/Projects/ECS271/Project/redwood-3dscan/meshes.json"):
+        print(f"creating dataset...")
+        self.dataset_path = Path(dataset_path)
+        self.sample_mode = sample_mode
+        self.sequence_length = sequence_length
+        self.mesh_json_path = Path(meshes_json)
+
+        print("Loading meshes from JSON...")
+        with open(self.mesh_json_path, 'r') as f:
+            mesh_data = json.load(f)
+            self.meshes = list(mesh_data)
+            self.meshes = [int(id) for id in self.meshes]
+            self.meshes = sorted(self.meshes)
+        
+        print(f"found {len(self.meshes)} meshes in the dataset.")
+
+        meshless = []
+        meshable = []
+        for dir in self.dataset_path.iterdir():
+            dir_int = int(dir.name)
+            if dir.is_dir() and dir_int in self.meshes:
+                meshable.append((dir_int, dir))
+            elif dir.is_dir() and dir_int not in self.meshes:
+                meshless.append((dir_int, dir))
+        print(f"found {len(meshable)} meshable scenes and {len(meshless)} meshless scenes.")
+
+        # construct dir objects
+        self.meshables = meshable
+        self.meshless = meshless[:len(meshable)]  # limit meshless to same number as meshable for balanced sampling
+        self.scenes = []
+
+        for meshable_scene in self.meshables:
+            dir_int, dir_path = meshable_scene
+            images = [img for img in dir_path.iterdir() if img.is_file() and img.suffix in [".jpg", ".png"]]
+            if len(images) > self.sequence_length:
+                images_ordered = sorted(images, key=lambda x: int(x.stem.split("_")[-1].split(".")[0]))
+                im_dir = ImageDir(dir_path)
+                for i, image in enumerate(images_ordered):
+                    im_dir.add_image(i, image)
+                    self.scenes.append({
+                        "scene_id" : dir_int,
+                        "scene" : im_dir,
+                        "class" : "meshable",
+                    })
+
+        for meshless_scene in self.meshless:
+            dir_int, dir_path = meshless_scene
+            images = [img for img in dir_path.iterdir() if img.is_file() and img.suffix in [".jpg", ".png"]]
+            if len(images) > self.sequence_length:
+                images_ordered = sorted(images, key=lambda x: int(x.stem.split("_")[-1].split(".")[0]))
+                im_dir = ImageDir(dir_path)
+                for i, image in enumerate(images_ordered):
+                    im_dir.add_image(i, image)
+                    self.scenes.append({
+                        "scene_id" : dir_int,
+                        "scene" : im_dir,
+                        "class" : "meshless",
+                    })
+
+    def __len__(self):
+        return len(self.scenes)
+    
+    def __getitem__(self, idx):
+        scene = self.scenes[idx]
+
+        if scene["class"] == "meshable":
+            label = [1, 0]
+        elif scene["class"] == "meshless":
+            label = [0, 1]
+        else:
+            raise ValueError("Invalid scene class. Must be 'meshable' or 'meshless'.")
+        
+        data = scene["scene"].get_random_sequence(self.sequence_length)
+        data = [torch.tensor(np.asarray(image.convert("RGB")), dtype=torch.float32).permute((2, 0, 1)) / 255.0 for image in data]
+        data = torch.stack(data, dim=0)
+
+        return data, torch.tensor(label)
+
+class FrameMatchingDatasetNoGeometry(Dataset):
+    def __init__(self, dataset_path, sample_mode="image-image", sequence_length=2, binary=True):
+        self.dataset_path = Path(dataset_path)
+        self.sample_mode = sample_mode
+        self.sequence_length = sequence_length
+        self.binary = binary
+
+        self.scenes = []
+        self.dataset_path = Path(dataset_path)
+        self.mesh_json_path = Path("/home/joseph/Projects/ECS271/Project/PoolNet/redwood/meshes.json")
+        self.sample_mode = sample_mode
+        if self.sample_mode not in ["image-image", "sequence-image", "sequence-sequence"]:
+            raise ValueError("Invalid sample_mode. Choose from 'image-image', 'sequence-image', or 'sequence-sequence'.")
+
+        # build map of data distribution and relationships
+        self.sampling_map = []
+        self.lengths = []
+
+        with open(self.mesh_json_path, 'r') as f:
+            mesh_data = json.load(f)
+            self.meshes = list(mesh_data)
+            self.meshes = [int(id) for id in self.meshes]
+        print(self.meshes)
+
+        min_scene_size = 10
+        index = 0
+        for dir in self.dataset_path.iterdir():
+            index += 1
+            if index < 1000:
+                print(f"Processing directory: {dir}")
+                images = [img for img in dir.iterdir() if img.is_file() and img.suffix in [".jpg", ".png"]]
+                images_ordered = sorted(images, key=lambda x: int(x.stem.split("_")[-1].split(".")[0]))
+                im_dir = ImageDir(dir)
+                for i, image in enumerate(images_ordered):
+                    im_dir.add_image(i, image)
+                    self.scenes.append({
+                        "image_pos" : i,
+                        "image_path" : image,
+                        "image_dir" : im_dir,
+                    })
+
+    def get_interdataset_match(self, idx):
+        im_dir = self.scenes[idx]["image_dir"]
+        im_pos = self.scenes[idx]["image_pos"]
+        
+        next_im_path = random.choice(list(im_dir.images.values()))
+        
+        
+        image1_data = Image.open(im_dir.images[im_pos])
+        image2_data = Image.open(next_im_path)
+        return image1_data, image2_data
+    
+    def get_extradataset_mismatch(self, idx):
+        im_dir = self.scenes[idx]["image_dir"]
+        im_pos = self.scenes[idx]["image_pos"]
+        satisfied = False
+        while not satisfied:
+            next_choice = random.choice(self.scenes)
+            next_im_dir = next_choice["image_dir"]
+            next_im_pos = next_choice["image_pos"]
+            if im_dir != next_im_dir or im_pos != next_im_pos:
+                satisfied = True
+            
+        image1_data = Image.open(im_dir.images[im_pos])
+        image2_data = Image.open(next_im_dir.images[next_im_pos])
+        return image1_data, image2_data
+
+    def get_intradataset_mismatch(self, idx):
+        pass
+    
+    def __len__(self):
+        return len(self.scenes)
+    
+    def __getitem__(self, idx):
+        if not self.binary:
+            random_choice = random.choice([1, 2, 3])
+        else:
+            random_choice = random.choice([1, 3])
+        if random_choice == 1:
+            im1, im2 = self.get_interdataset_match(idx)
+            im1 = torch.tensor(np.asarray(im1.convert("RGB")), dtype=torch.float32) / 255.0
+            im2 = torch.tensor(np.asarray(im2.convert("RGB")), dtype=torch.float32) / 255.0
+
+            # concat along new dimension
+            data = torch.cat((im1.unsqueeze(0), im2.unsqueeze(0)), dim=0)  # shape (C, H, W) for both images
+
+            return data, torch.tensor(1)
+        elif random_choice == 2:
+            data = self.get_intradataset_mismatch(idx)
+            return data, torch.tensor(0)
+        elif random_choice == 3:
+            im1, im2 = self.get_extradataset_mismatch(idx)
+            im1 = torch.tensor(np.asarray(im1.convert("RGB")), dtype=torch.float32) / 255.0
+            im2 = torch.tensor(np.asarray(im2.convert("RGB")), dtype=torch.float32) / 255.0
+
+            data = torch.cat((im1.unsqueeze(0), im2.unsqueeze(0)), dim=0)  # shape (C, H, W) for both images
+
+            return data, torch.tensor(-1)
+
 class FrameMatchingDataset(Dataset):
     def __init__(self, dataset_path, sample_mode="image-image", sequence_length=2, binary=True):
         self.dataset_path = Path(dataset_path)
